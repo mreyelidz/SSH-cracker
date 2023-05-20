@@ -55,7 +55,7 @@ def scan_ssh(ip_address):
     to return successful SSH login credentials
     """
     usernames = ['root', 'admin', 'ubuntu','kali']
-    passwords = ['password', '123456', 'admin', 'toor', 'qwerty'] 
+    passwords = ['password', 'kali', 'admin', 'toor', 'qwerty'] 
     for user in usernames:
         for password in passwords:
             if try_ssh(ip_address, user, password):
