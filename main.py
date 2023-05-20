@@ -1,4 +1,5 @@
 import socket 
+Import random
 import time 
 import paramiko 
 import logging 
@@ -65,14 +66,34 @@ def scan_ssh(ip_address):
     Scans an IP address with a range of default usernames and passwords
     to return successful SSH login credentials
     """
-    usernames = ['root', 'admin', 'ubuntu','kali']
-    passwords = ['password', '123456', 'admin', 'toor', 'qwerty'] 
-    for user in usernames:
-        for password in passwords:
-            if try_ssh(ip_address, user, password):
-                console.print(f"Successfully logged in to {ip_address} with username: {user} and password: {password}", style="green")
-            else:
+
+    usernames = ['root', 'admin', 'ubuntu', 'kali']
+    passwords = ['password', '123456', 'admin', 'toor', 'qwerty', 'kali']
+    random.shuffle(passwords)
+
+    remaining_passwords = passwords
+    attempts = 3
+
+    while remaining_passwords and attempts > 0:
+        current_passwords = remaining_passwords[:attempts]
+        remaining_passwords = remaining_passwords[attempts:]
+
+        for user in usernames:
+            successful_login = False
+
+            for password in current_passwords:
+                if try_ssh(ip_address, user, password):
+                    console.print(f"Successfully logged in to {ip_address} with username: {user} and password: {password}", style="green")
+                    return
+
                 console.print(f"Failed to log in to {ip_address} with username: {user} and password: {password}", style="red")
+
+                if successful_login:
+                    break
+
+        attempts -= 1
+
+    console.print(f"Failed to log in to {ip_address} with the given credentials", style="red")
 
 def print_results_table(credentials):
     """
